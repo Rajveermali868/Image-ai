@@ -1,0 +1,289 @@
+<!--
+Single-file Image AI Web App
+File name: image-ai-singlefile.html
+Description: A single HTML file that lets you generate images from text prompts using an image-generation API (OpenAI or Replicate-compatible).
+
+Usage:
+1. Open the file in a text editor and replace the placeholder API key or choose to enter your key at runtime.
+2. Upload to GitHub as a single file. Users can open the file locally or host it on GitHub Pages (enable Pages in repo settings).
+
+Security note: Do NOT commit your API key to a public repo. Instead, use runtime input or a server proxy.
+
+This file includes:
+- Prompt input
+- Option to upload a reference image (for edit/variation if supported by API)
+- Size selection
+- Number of images
+- Display of generated images with download buttons
+- Basic error handling and helpful messages
+
+The fetch code attempts to handle common responses from OpenAI-style APIs (data[0].b64_json or data[0].url). If your provider returns a different format, adjust the parsing in `handleGenerationResponse`.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Image AI — Single File</title>
+  <style>
+    :root{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;}
+    body{max-width:880px;margin:28px auto;padding:18px;}
+    h1{font-size:22px;margin-bottom:6px}
+    label{display:block;margin:10px 0 6px;font-weight:600}
+    input[type=text], select, textarea{width:100%;padding:8px;border-radius:6px;border:1px solid #d1d5db}
+    textarea{min-height:84px}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#111827;color:white;font-weight:600;cursor:pointer}
+    .row{display:flex;gap:8px}
+    .col{flex:1}
+    #gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:16px}
+    .card{background:#fff;border:1px solid #e6e6e6;padding:10px;border-radius:8px;text-align:center}
+    img.preview{max-width:100%;height:auto;border-radius:6px}
+    .note{font-size:13px;color:#374151;margin-top:8px}
+    footer{margin-top:20px;color:#6b7280;font-size:13px}
+    .small{font-size:13px;color:#6b7280}
+    .danger{color:#b91c1c}
+  </style>
+</head>
+<body>
+  <h1>Image AI — Single-file web app</h1>
+  <p class="small">Generate images from text prompts. This is a client-side demo — configure your API key or use a server proxy for production.</p>
+
+  <label for="apiProvider">API Provider</label>
+  <select id="apiProvider">
+    <option value="openai">OpenAI (images endpoint)</option>
+    <option value="replicate">Replicate-compatible</option>
+  </select>
+
+  <label for="apiKey">API Key (enter at runtime — do not commit to public repos)</label>
+  <input id="apiKey" type="text" placeholder="Paste your API key here (keeps it out of the file)" />
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" placeholder="A cute corgi astronaut standing on the moon, photorealistic, studio lighting"></textarea>
+
+  <div class="row" style="margin-top:8px">
+    <div class="col">
+      <label for="size">Size</label>
+      <select id="size">
+        <option value="256x256">256x256</option>
+        <option value="512x512" selected>512x512</option>
+        <option value="1024x1024">1024x1024</option>
+      </select>
+    </div>
+    <div style="width:120px">
+      <label for="n">Count</label>
+      <select id="n">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+    </div>
+  </div>
+
+  <label for="imageFile">Optional: reference image (for edit/variation)</label>
+  <input id="imageFile" type="file" accept="image/*" />
+
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+    <button id="generateBtn">Generate Image(s)</button>
+    <button id="clearBtn" style="background:#e5e7eb;color:#111827">Clear</button>
+    <div id="status" class="note" style="margin-left:8px"></div>
+  </div>
+
+  <div id="gallery"></div>
+
+  <footer>
+    <p class="small">Instructions: Add your API key at the top input. For production, use a server-side proxy to keep keys secret. If you use OpenAI, the app expects a response with either <code>data[0].b64_json</code> (base64) or <code>data[0].url</code>. Adjust parsing as needed.</p>
+  </footer>
+
+  <script>
+    const apiProviderEl = document.getElementById('apiProvider');
+    const apiKeyEl = document.getElementById('apiKey');
+    const promptEl = document.getElementById('prompt');
+    const sizeEl = document.getElementById('size');
+    const nEl = document.getElementById('n');
+    const imageFileEl = document.getElementById('imageFile');
+    const gallery = document.getElementById('gallery');
+    const status = document.getElementById('status');
+    const generateBtn = document.getElementById('generateBtn');
+    const clearBtn = document.getElementById('clearBtn');
+
+    clearBtn.addEventListener('click', ()=>{
+      promptEl.value='';gallery.innerHTML='';status.textContent='';apiKeyEl.value='';
+    });
+
+    generateBtn.addEventListener('click', async ()=>{
+      const provider = apiProviderEl.value;
+      const apiKey = apiKeyEl.value.trim();
+      const prompt = promptEl.value.trim();
+      const size = sizeEl.value;
+      const count = Number(nEl.value);
+
+      if(!prompt){status.textContent='Please enter a prompt.';return}
+      if(!apiKey){status.textContent='Please provide an API key (or run behind a proxy).';return}
+
+      status.textContent='Generating...';
+      generateBtn.disabled = true;
+
+      try{
+        // If a reference image is provided, read it as a File object
+        const refFile = imageFileEl.files[0] || null;
+        let responseJson = null;
+
+        if(provider==='openai'){
+          // OpenAI images generative endpoint (client-side). Note: exposing API key client-side is insecure.
+          const url = 'https://api.openai.com/v1/images/generations';
+
+          const body = {
+            prompt: prompt,
+            n: count,
+            size: size
+          };
+
+          // If user supplied an image and the API supports images, you would add it as multipart/form-data.
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + apiKey
+            },
+            body: JSON.stringify(body)
+          });
+          responseJson = await res.json();
+        } else if(provider==='replicate'){
+          // Example: Replicate text-to-image endpoint pattern. Replace model and payload per your account.
+          const url = 'https://api.replicate.com/v1/predictions';
+          const payload = {
+            version: "db21e45d...replace_with_model_version",
+            input: {
+              prompt: prompt,
+              width: parseInt(size.split('x')[0],10),
+              height: parseInt(size.split('x')[1],10)
+            }
+          };
+          const res = await fetch(url,{
+            method:'POST',
+            headers:{
+              'Content-Type':'application/json',
+              'Authorization':'Token ' + apiKey
+            },
+            body: JSON.stringify(payload)
+          });
+          responseJson = await res.json();
+        }
+
+        handleGenerationResponse(responseJson, provider, count);
+      }catch(err){
+        console.error(err);
+        status.textContent = 'Error: ' + (err.message || err);
+      } finally{
+        generateBtn.disabled = false;
+      }
+    });
+
+    function handleGenerationResponse(resp, provider, count){
+      gallery.innerHTML = '';
+      status.textContent = '';
+      if(!resp){ status.textContent = 'No response from API.'; return }
+
+      // Common OpenAI-style response: { data: [ { b64_json: '...' } ] }
+      if(resp.data && Array.isArray(resp.data) && resp.data.length){
+        resp.data.forEach((item, idx)=>{
+          if(item.b64_json){
+            const img = document.createElement('img');
+            img.className = 'preview';
+            img.src = 'data:image/png;base64,' + item.b64_json;
+            addCard(img, idx+1);
+          } else if(item.url){
+            const img = document.createElement('img');
+            img.className = 'preview';
+            img.crossOrigin = 'anonymous';
+            img.src = item.url;
+            addCard(img, idx+1);
+          }
+        });
+        return;
+      }
+
+      // Replicate-style: { output: ['https://...png', ...] }
+      if(resp.output && Array.isArray(resp.output)){
+        resp.output.forEach((url, idx)=>{
+          const img = document.createElement('img');
+          img.className = 'preview';
+          img.src = url;
+          addCard(img, idx+1);
+        });
+        return;
+      }
+
+      // If response contains a single url string
+      if(resp.url && typeof resp.url === 'string'){
+        const img = document.createElement('img');
+        img.className = 'preview';
+        img.src = resp.url;
+        addCard(img, 1);
+        return;
+      }
+
+      // If OpenAI returns base64 in different key
+      if(resp.base64_image){
+        const img = document.createElement('img');
+        img.className = 'preview';
+        img.src = 'data:image/png;base64,' + resp.base64_image;
+        addCard(img, 1);
+        return;
+      }
+
+      // Fallback: show raw JSON so developer can debug
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(resp, null, 2);
+      gallery.appendChild(pre);
+      status.textContent = 'Response format not recognized — see JSON above.';
+    }
+
+    function addCard(imgEl, idx){
+      const div = document.createElement('div');
+      div.className = 'card';
+      const title = document.createElement('div');
+      title.style.fontSize='13px';
+      title.style.marginBottom='8px';
+      title.textContent = 'Image ' + idx;
+      div.appendChild(title);
+      div.appendChild(imgEl);
+
+      const btnWrap = document.createElement('div');
+      btnWrap.style.marginTop='8px';
+
+      const dl = document.createElement('button');
+      dl.textContent = 'Download';
+      dl.style.marginRight='6px';
+      dl.addEventListener('click', ()=>downloadImage(imgEl.src, 'image-'+idx+'.png'));
+      btnWrap.appendChild(dl);
+
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open';
+      openBtn.style.background='#10b981';
+      openBtn.addEventListener('click', ()=>window.open(imgEl.src, '_blank'));
+      btnWrap.appendChild(openBtn);
+
+      div.appendChild(btnWrap);
+      gallery.appendChild(div);
+    }
+
+    function downloadImage(dataUrl, filename){
+      // If dataUrl is remote URL, try to fetch blob
+      if(dataUrl.startsWith('http')){
+        fetch(dataUrl).then(r=>r.blob()).then(blob=>{
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+          URL.revokeObjectURL(url);
+        }).catch(e=>{ alert('Download failed: '+e); });
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = dataUrl; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    }
+  </script>
+</body>
+</html>
